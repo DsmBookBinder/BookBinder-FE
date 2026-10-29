@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router";
 import { DEMO_ACCOUNTS } from "../data/seed";
 import { login, resetDemoData, useDb } from "../store/db";
-import { currentUser, homePathFor } from "../store/selectors";
+import { canAccess, currentUser, homePathFor } from "../store/selectors";
 
 interface LoginLocationState {
   from?: string;
@@ -16,8 +16,8 @@ export function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  // 로그인에 성공하면 여기서 이동한다. 원래 가려던 화면은 학생용뿐이라 학생에게만 돌려보낸다.
-  if (user) return <Navigate to={(user.role === "student" && state.from) || homePathFor(user)} replace />;
+  // 로그인에 성공하면 여기서 이동한다. 원래 가려던 화면이 이 역할로 볼 수 있는 곳이면 그리로 돌려보낸다.
+  if (user) return <Navigate to={state.from && canAccess(user, state.from) ? state.from : homePathFor(user)} replace />;
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();

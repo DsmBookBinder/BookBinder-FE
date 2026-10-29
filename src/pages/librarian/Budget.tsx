@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DownloadIcon, StatCard, StatusBadge, Table } from "../../components/ui";
-import { downloadCsv } from "../../lib/export";
+import { downloadXlsx } from "../../lib/export";
 import { fileStamp, STATUS_LABEL, won } from "../../lib/format";
 import { setPrice, setQuantity, useDb } from "../../store/db";
 import { bookRows, type BookRow } from "../../store/selectors";
@@ -8,7 +8,8 @@ import type { Status } from "../../types";
 
 type Period = "semester" | "year" | "all";
 
-const STATUSES: Status[] = ["pending", "approved", "purchased", "rejected"];
+/** 예상 예산에 넣고 뺄 수 있는 상태. 구매완료는 이미 쓴 돈이라 예상 예산과 따로 집계한다. */
+const EXPECTED_STATUSES: Status[] = ["pending", "approved", "rejected"];
 const PERIOD_LABEL: Record<Period, string> = { semester: "이번 학기", year: "올해", all: "전체 기간" };
 const CHART_MONTHS = 6;
 
@@ -75,17 +76,69 @@ function MonthlyChart({ rows }: { rows: BookRow[] }) {
   );
 }
 
+function BudgetTable({ rows, editable, empty }: { rows: BookRow[]; editable: boolean; empty: string }) {
+  return (
+    <Table columns="2fr 100px 1fr 110px 1fr" minWidth={560} head={["도서명", "상태", "단가", "구매 수량", "소계"]}>
+      {rows.length === 0 && <p className="empty">{empty}</p>}
+      {rows.map((row) => (
+        <div key={row.book.id} className="table__row" role="row">
+          <div role="cell">{row.book.title}</div>
+          <div role="cell"><StatusBadge status={row.review.status} /></div>
+          <div role="cell">
+            {row.book.price !== null ? (
+              won(row.book.price)
+            ) : editable ? (
+              <input
+                type="number"
+                className="qty qty--price"
+                min={0}
+                step={100}
+                placeholder="가격 입력"
+                aria-label={`${row.book.title} 단가`}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                onBlur={(e) => {
+                  const price = Number(e.target.value);
+                  if (e.target.value && price > 0) setPrice(row.book.id, Math.round(price));
+                }}
+              />
+            ) : (
+              <span className="muted">가격 미정</span>
+            )}
+          </div>
+          <div role="cell">
+            {editable ? (
+              <input
+                type="number"
+                className="qty"
+                min={0}
+                aria-label={`${row.book.title} 구매 수량`}
+                value={row.review.quantity}
+                onChange={(e) => setQuantity(row.book.id, Number(e.target.value))}
+              />
+            ) : (
+              `${row.review.quantity}권`
+            )}
+          </div>
+          <div role="cell">{row.book.price === null ? <span className="muted">—</span> : won(subtotal(row))}</div>
+        </div>
+      ))}
+    </Table>
+  );
+}
+
 export function Budget() {
   const db = useDb();
-  const [included, setIncluded] = useState<ReadonlySet<Status>>(new Set<Status>(["pending", "approved", "purchased"]));
+  const [included, setIncluded] = useState<ReadonlySet<Status>>(new Set<Status>(["pending", "approved"]));
   const [period, setPeriod] = useState<Period>("semester");
 
   const allRows = bookRows(db);
   const start = periodStart(period, new Date());
   const inPeriod = allRows.filter((row) => row.latestAt >= start);
-  const rows = inPeriod.filter((row) => included.has(row.review.status));
-  const missingPrice = rows.filter((row) => row.book.price === null).length;
+  const expected = inPeriod.filter((row) => included.has(row.review.status));
+  const purchased = inPeriod.filter((row) => row.review.status === "purchased");
+  const missingPrice = expected.filter((row) => row.book.price === null).length;
   const sumOf = (status: Status) => sum(inPeriod.filter((row) => row.review.status === status));
+  const includedLabel = EXPECTED_STATUSES.filter((status) => included.has(status)).map((status) => STATUS_LABEL[status]).join(" + ");
 
   const toggleStatus = (status: Status) => {
     const next = new Set(included);
@@ -94,11 +147,19 @@ export function Budget() {
   };
 
   const handleExport = () => {
-    downloadCsv(`예상예산_${fileStamp()}.csv`, [
-      ["도서명", "상태", "단가", "구매 수량", "소계"],
-      ...rows.map((row) => [row.book.title, STATUS_LABEL[row.review.status], row.book.price, row.review.quantity, subtotal(row)]),
-      ["합계", "", "", "", sum(rows)],
-    ]);
+    const toCells = (kind: string) => (row: BookRow) =>
+      [kind, row.book.title, STATUS_LABEL[row.review.status], row.book.price, row.review.quantity, row.book.price === null ? null : subtotal(row)];
+    void downloadXlsx(
+      `예상예산_${fileStamp()}.xlsx`,
+      ["구분", "도서명", "상태", "단가", "구매 수량", "소계"],
+      [
+        ...expected.map(toCells("예상")),
+        ...purchased.map(toCells("구매완료")),
+        ["예상 예산 합계", null, null, null, null, sum(expected)],
+        ["구매완료 합계", null, null, null, null, sum(purchased)],
+      ],
+      [16, 32, 10, 12, 10, 14],
+    );
   };
 
   return (
@@ -109,15 +170,15 @@ export function Budget() {
           <p className="page-desc">신청된 도서 가격을 기준으로 계산한 예상 구매 비용이에요.</p>
         </div>
         <div className="spacer" />
-        <button type="button" className="btn btn--primary" disabled={rows.length === 0} onClick={handleExport}>
+        <button type="button" className="btn btn--primary" disabled={expected.length + purchased.length === 0} onClick={handleExport}>
           <DownloadIcon />
           엑셀 내보내기
         </button>
       </div>
 
       <div className="card checks">
-        <span className="checks__title">계산에 포함할 상태</span>
-        {STATUSES.map((status) => (
+        <span className="checks__title">예상 예산에 포함할 상태</span>
+        {EXPECTED_STATUSES.map((status) => (
           <label key={status} className="check">
             <input type="checkbox" className="checkbox" checked={included.has(status)} onChange={() => toggleStatus(status)} />
             {STATUS_LABEL[status]}
@@ -135,57 +196,22 @@ export function Budget() {
       </div>
 
       <div className="stats" style={{ gap: 16 }}>
-        <StatCard variant="hero" label="총 예상 예산" value={won(sum(rows))} />
+        <StatCard variant="hero" label={`총 예상 예산${includedLabel ? ` (${includedLabel})` : ""}`} value={won(sum(expected))} />
         <StatCard variant="lg" label="대기 합계" value={won(sumOf("pending"))} />
         <StatCard variant="lg" label="승인 합계" value={won(sumOf("approved"))} />
-        <StatCard variant="lg" label="구매완료 합계" value={won(sumOf("purchased"))} />
+        <StatCard variant="lg" label={`구매완료 예산 (${purchased.length}권 · 예상 예산과 별도)`} value={won(sum(purchased))} />
       </div>
 
       <div className="budget-layout">
-        <div className="budget-layout__table">
-          <Table columns="2fr 100px 1fr 110px 1fr" minWidth={560} head={["도서명", "상태", "단가", "구매 수량", "소계"]}>
-            {rows.length === 0 && <p className="empty">선택한 조건에 해당하는 도서가 없어요.</p>}
-            {rows.map((row) => (
-              <div key={row.book.id} className="table__row" role="row">
-                <div role="cell">{row.book.title}</div>
-                <div role="cell"><StatusBadge status={row.review.status} /></div>
-                <div role="cell">
-                  {row.book.price === null ? (
-                    <input
-                      type="number"
-                      className="qty qty--price"
-                      min={0}
-                      step={100}
-                      placeholder="가격 입력"
-                      aria-label={`${row.book.title} 단가`}
-                      onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-                      onBlur={(e) => {
-                        const price = Number(e.target.value);
-                        if (e.target.value && price > 0) setPrice(row.book.id, Math.round(price));
-                      }}
-                    />
-                  ) : (
-                    won(row.book.price)
-                  )}
-                </div>
-                <div role="cell">
-                  <input
-                    type="number"
-                    className="qty"
-                    min={0}
-                    aria-label={`${row.book.title} 구매 수량`}
-                    value={row.review.quantity}
-                    onChange={(e) => setQuantity(row.book.id, Number(e.target.value))}
-                  />
-                </div>
-                <div role="cell">{row.book.price === null ? <span className="muted">—</span> : won(subtotal(row))}</div>
-              </div>
-            ))}
-          </Table>
+        <div className="budget-layout__table stack">
+          <h2 className="section-title">예상 예산 도서</h2>
+          <BudgetTable editable rows={expected} empty="선택한 조건에 해당하는 도서가 없어요." />
+          <h2 className="section-title">구매완료 도서</h2>
+          <BudgetTable editable={false} rows={purchased} empty="이 기간에 구매완료된 도서가 없어요." />
         </div>
 
         <div className="budget-layout__side">
-          <MonthlyChart rows={allRows.filter((row) => included.has(row.review.status))} />
+          <MonthlyChart rows={allRows.filter((row) => included.has(row.review.status) || row.review.status === "purchased")} />
           <div className="card card--note" style={{ padding: "18px 20px" }}>
             <div className="between">
               <span>가격 정보 없는 도서</span>

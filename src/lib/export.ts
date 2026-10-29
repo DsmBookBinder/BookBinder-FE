@@ -1,18 +1,12 @@
+import writeExcelFile from "write-excel-file/browser";
+
 type Cell = string | number | null;
 
-function escapeCell(value: Cell): string {
-  const text = value === null ? "" : String(value);
-  return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-/** 엑셀에서 한글이 깨지지 않도록 BOM을 붙인 CSV로 내려받는다. */
-export function downloadCsv(filename: string, rows: Cell[][]): void {
-  const csv = rows.map((row) => row.map(escapeCell).join(",")).join("\r\n");
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+/** 첫 줄을 굵은 머리글로 한 .xlsx 파일을 내려받는다. widths는 열 너비(글자 수). */
+export async function downloadXlsx(filename: string, header: string[], rows: Cell[][], widths: number[]): Promise<void> {
+  const data = [
+    header.map((value) => ({ value, fontWeight: "bold" as const })),
+    ...rows.map((row) => row.map((value) => (typeof value === "number" ? { value, type: Number, format: "#,##0" } : value))),
+  ];
+  await writeExcelFile(data, { columns: widths.map((width) => ({ width })), stickyRowsCount: 1 }).toFile(filename);
 }

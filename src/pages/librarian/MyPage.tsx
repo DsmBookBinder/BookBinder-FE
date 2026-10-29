@@ -84,7 +84,7 @@ export function LibrarianMyPage() {
         <div className="row">
           <h2 className="section-title">최근 처리 내역</h2>
           <div className="spacer" />
-          <Link to="/librarian/requests">신청 목록으로 이동</Link>
+          <Link to="/admin/requests">신청 목록으로 이동</Link>
         </div>
 
         <Table columns="160px 2fr 120px" minWidth={480} head={["처리 일시", "도서명", "변경 상태"]}>

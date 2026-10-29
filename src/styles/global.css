@@ -1067,6 +1067,10 @@ textarea.input {
   padding: 14px 20px;
   font-size: 14px;
 }
+.summary select.input {
+  width: auto;
+  min-width: 120px;
+}
 .summary__item {
   display: flex;
   align-items: center;

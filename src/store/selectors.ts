@@ -6,7 +6,14 @@ export function currentUser(db: Db): User | null {
 
 export function homePathFor(user: User | null): string {
   if (!user) return "/login";
-  return user.role === "librarian" ? "/librarian/requests" : "/books";
+  return user.role === "librarian" ? "/admin/requests" : "/books";
+}
+
+/** 역할에 맞지 않는 화면(403이 뜨는 곳)이 아닌지 */
+export function canAccess(user: User, path: string): boolean {
+  const adminOnly = path.startsWith("/admin");
+  const studentOnly = path.startsWith("/books") || path.startsWith("/notifications");
+  return user.role === "librarian" ? !studentOnly : !adminOnly;
 }
 
 export function requestCount(db: Db, bookId: string): number {

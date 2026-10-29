@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Modal } from "../../components/Modal";
 import { DownloadIcon, Pagination, StatusBadge, Table } from "../../components/ui";
-import { downloadCsv } from "../../lib/export";
+import { downloadXlsx } from "../../lib/export";
 import { fileStamp, formatDate, formatShortDate, STATUS_LABEL, won } from "../../lib/format";
 import { canTransition, setStatus, useDb } from "../../store/db";
 import { bookRows, type BookRow } from "../../store/selectors";
@@ -16,6 +16,8 @@ interface Filters {
   classNo: string;
   q: string;
 }
+
+type Sort = "latest" | "count";
 
 const PAGE_SIZE = 6;
 const STATUSES: Status[] = ["pending", "approved", "rejected", "purchased"];
@@ -69,12 +71,16 @@ export function Requests() {
   const db = useDb();
   const [draft, setDraft] = useState<Filters>(NO_FILTERS);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [sort, setSort] = useState<Sort>("latest");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [rejecting, setRejecting] = useState<string[] | null>(null);
 
   const rows = bookRows(db);
-  const filtered = rows.filter((row) => matches(row, filters));
+  // bookRows는 최신순으로 온다. 신청 수가 같으면 최신순이 유지된다.
+  const filtered = rows
+    .filter((row) => matches(row, filters))
+    .sort((a, b) => (sort === "count" ? b.requests.length - a.requests.length : 0));
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const visible = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
@@ -113,9 +119,10 @@ export function Requests() {
   };
 
   const handleExport = () => {
-    downloadCsv(`신청도서목록_${fileStamp()}.csv`, [
+    void downloadXlsx(
+      `신청도서목록_${fileStamp()}.xlsx`,
       ["도서명", "저자", "출판사", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청일", "상태", "반려 사유"],
-      ...filtered.map((row) => [
+      filtered.map((row) => [
         row.book.title,
         row.book.author,
         row.book.publisher,
@@ -127,7 +134,8 @@ export function Requests() {
         STATUS_LABEL[row.review.status],
         row.review.reason ?? "",
       ]),
-    ]);
+      [32, 22, 16, 16, 10, 8, 40, 12, 10, 40],
+    );
   };
 
   const bulkButton = (action: Action, label: string) => {
@@ -161,6 +169,21 @@ export function Requests() {
             <span><b>{countOf(status)}</b>건</span>
           </div>
         ))}
+        <div className="spacer" />
+        <label className="summary__item">
+          정렬
+          <select
+            className="input input--sm"
+            value={sort}
+            onChange={(e) => {
+              setSort(e.target.value as Sort);
+              setPage(1);
+            }}
+          >
+            <option value="latest">최신순</option>
+            <option value="count">신청 수 순</option>
+          </select>
+        </label>
       </div>
 
       <form

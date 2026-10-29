@@ -9,9 +9,9 @@ const STUDENT_NAV = [
 ];
 
 const LIBRARIAN_NAV = [
-  { to: "/librarian/requests", label: "신청 도서 목록" },
-  { to: "/librarian/budget", label: "총 예산 조회" },
-  { to: "/librarian/mypage", label: "마이페이지" },
+  { to: "/admin/requests", label: "신청 도서 목록" },
+  { to: "/admin/budget", label: "총 예산 조회" },
+  { to: "/mypage", label: "마이페이지" },
 ];
 
 export function Header() {

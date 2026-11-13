@@ -2,7 +2,7 @@
 // 실제 API가 생기면 이 파일의 함수들을 fetch 호출로 바꾸면 된다.
 import { useSyncExternalStore } from "react";
 import { createSeed } from "../data/seed";
-import type { Db, LogEntry, Notification, Role, Status, User } from "../types";
+import type { Db, LogEntry, Notification, Status, User } from "../types";
 
 const STORAGE_KEY = "bookbinder:v1";
 
@@ -60,7 +60,6 @@ export function logout(): void {
 }
 
 export interface SignupInput {
-  role: Role;
   name: string;
   loginId: string;
   password: string;
@@ -76,9 +75,10 @@ export function signup(input: SignupInput): Result {
     loginId,
     password: input.password,
     name: input.name.trim(),
-    role: input.role,
+    role: "student",
     joinedAt: Date.now(),
-    ...(input.role === "student" ? { classNo: input.classNo?.trim(), studentNo: input.studentNo?.trim() } : {}),
+    classNo: input.classNo?.trim(),
+    studentNo: input.studentNo,
   };
   commit({ ...state, users: [...state.users, user] });
   return ok(undefined);

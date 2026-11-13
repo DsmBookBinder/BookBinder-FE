@@ -16,8 +16,8 @@ function ProfileModal({ user, onClose }: { user: User; onClose: () => void }) {
   const [error, setError] = useState("");
 
   const handleSubmit = () => {
-    if (!name.trim() || !/^[1-3]-\d{1,2}$/.test(classNo.trim()) || !/^\d{4,6}$/.test(studentNo.trim())) {
-      setError("이름, 학년/반(예: 2-3), 학번(숫자)을 확인해 주세요.");
+    if (!name.trim() || !/^[1-3]-\d{1,2}$/.test(classNo.trim()) || !/^[0-9]{5}$/.test(studentNo)) {
+      setError("이름, 학년/반(예: 2-3), 학번(숫자 5자리)을 확인해 주세요.");
       return;
     }
     updateProfile({ name: name.trim(), classNo: classNo.trim(), studentNo: studentNo.trim() });
@@ -37,7 +37,7 @@ function ProfileModal({ user, onClose }: { user: User; onClose: () => void }) {
         </div>
         <div className="field">
           <label htmlFor="pf-no" className="field__label">학번</label>
-          <input id="pf-no" className="input" placeholder="예: 20315" value={studentNo} onChange={(e) => setStudentNo(e.target.value)} />
+          <input inputMode="numeric" id="pf-no" className="input" placeholder="예: 20315" value={studentNo} onChange={(e) => setStudentNo(e.target.value)} />
         </div>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}

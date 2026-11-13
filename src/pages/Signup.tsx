@@ -12,7 +12,7 @@ function validate(v: typeof EMPTY): Partial<Record<FieldName, string>> {
   if (v.password.length < 8) errors.password = "8자 이상 입력해 주세요.";
   if (v.password2 !== v.password) errors.password2 = "비밀번호가 서로 달라요.";
     if (!/^[1-3]-\d{1,2}$/.test(v.classNo.trim())) errors.classNo = "2-3처럼 학년-반으로 입력해 주세요.";
-    if (!/^\d{4,6}$/.test(v.studentNo.trim())) errors.studentNo = "숫자로 된 학번을 입력해 주세요.";
+    if (!/^[0-9]{5}$/.test(v.studentNo)) errors.studentNo = "숫자 5자리 학번을 입력해 주세요.";
   return errors;
 }
 

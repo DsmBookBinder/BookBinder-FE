@@ -17,7 +17,7 @@ interface Filters {
   q: string;
 }
 
-type Sort = "latest" | "count";
+type Sort = "latest" | "count" | "title";
 
 const PAGE_SIZE = 6;
 const STATUSES: Status[] = ["pending", "approved", "rejected", "purchased"];
@@ -85,7 +85,13 @@ export function Requests() {
   // bookRows는 최신순으로 온다. 신청 수가 같으면 최신순이 유지된다.
   const filtered = rows
     .filter((row) => matches(row, filters))
-    .sort((a, b) => (sort === "count" ? b.requests.length - a.requests.length : 0));
+    .sort((a, b) =>
+      sort === "count"
+        ? b.requests.length - a.requests.length
+        : sort === "title"
+          ? a.book.title.localeCompare(b.book.title, "ko")
+          : 0,
+    );
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const currentPage = Math.min(page, pageCount);
   const visible = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
@@ -193,6 +199,7 @@ export function Requests() {
           >
             <option value="latest">최신순</option>
             <option value="count">신청 수 순</option>
+            <option value="title">가나다순</option>
           </select>
         </label>
       </div>

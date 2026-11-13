@@ -205,6 +205,41 @@ export function setStatus(bookIds: string[], status: Exclude<Status, "pending">,
   return targets.length;
 }
 
+/** 되돌리면 한 단계 전 상태가 된다 (승인·반려 → 대기, 구매완료 → 승인) */
+const REVERT_TO: Record<Exclude<Status, "pending">, Status> = {
+  approved: "pending",
+  rejected: "pending",
+  purchased: "approved",
+};
+
+/** 대기 상태는 되돌릴 곳이 없다. 실제로 되돌린 건수를 돌려준다. */
+export function revertStatus(bookIds: string[]): number {
+  if (sessionUser()?.role !== "librarian") return 0;
+  const targets = bookIds.filter((id) => {
+    const review = state.reviews[id];
+    return review && review.status !== "pending";
+  });
+  if (targets.length === 0) return 0;
+
+  const now = Date.now();
+  const reviews = { ...state.reviews };
+  const unpurchased = new Set<string>();
+  for (const bookId of targets) {
+    const review = reviews[bookId];
+    const from = review.status as Exclude<Status, "pending">;
+    if (from === "purchased") unpurchased.add(bookId);
+    reviews[bookId] = { ...review, status: REVERT_TO[from], reason: undefined, updatedAt: now };
+  }
+
+  commit({
+    ...state,
+    reviews,
+    // 구매완료를 취소하면 교내 소장 도서에서 다시 빠진다
+    books: state.books.map((b) => (unpurchased.has(b.id) ? { ...b, owned: false } : b)),
+  });
+  return targets.length;
+}
+
 export function setQuantity(bookId: string, quantity: number): void {
   const review = state.reviews[bookId];
   if (!review) return;

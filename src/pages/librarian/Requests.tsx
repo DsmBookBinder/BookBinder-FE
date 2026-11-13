@@ -3,7 +3,7 @@ import { Modal } from "../../components/Modal";
 import { DownloadIcon, Pagination, StatusBadge, Table } from "../../components/ui";
 import { downloadXlsx } from "../../lib/export";
 import { fileStamp, formatDate, formatShortDate, STATUS_LABEL, won } from "../../lib/format";
-import { canTransition, setStatus, useDb } from "../../store/db";
+import { canTransition, revertStatus, setStatus, useDb } from "../../store/db";
 import { bookRows, type BookRow } from "../../store/selectors";
 import type { Status } from "../../types";
 
@@ -36,6 +36,11 @@ function matches(row: BookRow, filters: Filters): boolean {
   const haystack = [row.book.title, row.book.author, ...row.requesters.flatMap((u) => [u.name, u.studentNo ?? ""])];
   return haystack.join(" ").toLowerCase().includes(q);
 }
+
+/** 구매완료는 검토 결과로는 '승인'이다. 구매 여부는 별도 컬럼에서 보여 준다. */
+const reviewStatus = (status: Status): Exclude<Status, "purchased"> => (status === "purchased" ? "approved" : status);
+const purchaseLabel = (status: Status) => (status === "purchased" ? STATUS_LABEL.purchased : status === "approved" ? "미구매" : "-");
+const REVERT_LABEL = { approved: "승인 취소", rejected: "반려 취소", purchased: "구매완료 취소" } as const;
 
 function requesterSummary(row: BookRow): string {
   const [first, ...rest] = row.requesters;
@@ -118,10 +123,15 @@ export function Requests() {
     setRejecting(null);
   };
 
+  const revert = (ids: string[]) => {
+    revertStatus(ids);
+    toggle(ids, false);
+  };
+
   const handleExport = () => {
     void downloadXlsx(
       `신청도서목록_${fileStamp()}.xlsx`,
-      ["도서명", "저자", "출판사", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청일", "상태", "반려 사유"],
+      ["도서명", "저자", "출판사", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청일", "검토 결과", "구매 여부", "반려 사유"],
       filtered.map((row) => [
         row.book.title,
         row.book.author,
@@ -131,10 +141,11 @@ export function Requests() {
         row.requests.length,
         row.requesters.map((u) => `${u.name}(${u.classNo ?? "-"})`).join(", "),
         formatDate(row.latestAt),
-        STATUS_LABEL[row.review.status],
+        STATUS_LABEL[reviewStatus(row.review.status)],
+        purchaseLabel(row.review.status),
         row.review.reason ?? "",
       ]),
-      [32, 22, 16, 16, 10, 8, 40, 12, 10, 40],
+      [32, 22, 16, 16, 10, 8, 40, 12, 10, 10, 40],
     );
   };
 
@@ -233,14 +244,22 @@ export function Requests() {
         {bulkButton("approved", "일괄 승인")}
         {bulkButton("rejected", "일괄 반려")}
         {bulkButton("purchased", "구매완료 처리")}
+        <button
+          type="button"
+          className="btn btn--sm"
+          disabled={selectedRows.every((row) => row.review.status === "pending")}
+          onClick={() => revert(selectedRows.filter((row) => row.review.status !== "pending").map((row) => row.book.id))}
+        >
+          한 단계 되돌리기
+        </button>
       </div>
 
       <Table
-        columns="44px 2.2fr 1fr 0.8fr 0.7fr 1.1fr 0.8fr 100px 1.2fr"
-        minWidth={1040}
+        columns="44px 2.2fr 1fr 0.8fr 0.7fr 1.1fr 0.8fr 90px 100px minmax(176px, 1.3fr)"
+        minWidth={1160}
         head={[
           <input type="checkbox" className="checkbox" aria-label="이 페이지 전체 선택" checked={allVisibleSelected} onChange={(e) => toggle(visible.map((row) => row.book.id), e.target.checked)} />,
-          "도서", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청", "상태", "조치",
+          "도서", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청", "검토 결과", "구매 여부", "조치",
         ]}
       >
         {visible.length === 0 && <p className="empty">조건에 맞는 신청 도서가 없어요.</p>}
@@ -264,18 +283,27 @@ export function Requests() {
                 {requesterSummary(row)}
               </div>
               <div role="cell" className="cell-sm">{formatShortDate(row.latestAt)}</div>
-              <div role="cell"><StatusBadge status={review.status} /></div>
+              <div role="cell"><StatusBadge status={reviewStatus(review.status)} /></div>
               <div role="cell">
-                {review.status === "pending" ? (
-                  <div className="cell-actions">
-                    <button type="button" className="btn btn--xs" onClick={() => act([book.id], "approved")}>승인</button>
-                    <button type="button" className="btn btn--xs" onClick={() => act([book.id], "rejected")}>반려</button>
-                  </div>
-                ) : review.status === "approved" ? (
-                  <button type="button" className="btn btn--xs" onClick={() => act([book.id], "purchased")}>구매완료 처리</button>
-                ) : (
-                  <span className="muted">—</span>
-                )}
+                {review.status === "purchased" ? <StatusBadge status="purchased" /> : <span className="muted">{purchaseLabel(review.status)}</span>}
+              </div>
+              <div role="cell">
+                <div className="cell-actions">
+                  {review.status === "pending" && (
+                    <>
+                      <button type="button" className="btn btn--xs" onClick={() => act([book.id], "approved")}>승인</button>
+                      <button type="button" className="btn btn--xs" onClick={() => act([book.id], "rejected")}>반려</button>
+                    </>
+                  )}
+                  {review.status === "approved" && (
+                    <button type="button" className="btn btn--xs" onClick={() => act([book.id], "purchased")}>구매완료</button>
+                  )}
+                  {review.status !== "pending" && (
+                    <button type="button" className="btn btn--xs" aria-label={`${book.title} ${REVERT_LABEL[review.status]}`} onClick={() => revert([book.id])}>
+                      {REVERT_LABEL[review.status]}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           );

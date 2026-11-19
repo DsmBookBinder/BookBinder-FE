@@ -159,10 +159,15 @@ textarea {
 .header__user {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
   font-size: 14px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+.pagination__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .bell {
   position: relative;

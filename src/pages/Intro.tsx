@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { useDb } from "../store/db";
-import { currentUser, homePathFor } from "../store/selectors";
+import { currentUser } from "../store/selectors";
+import type { Role } from "../types";
 
 const icon = (children: ReactNode) => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -26,7 +27,7 @@ const FEATURES = [
     icon: icon(<><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></>),
   },
   {
-    title: "사서 선생님용",
+    title: "관리자",
     desc: "신청 목록 필터링, 엑셀 추출, 총 예상 예산을 한눈에.",
     icon: icon(<><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></>),
   },
@@ -54,9 +55,10 @@ function HeroArt() {
   );
 }
 
-export function Intro() {
-  const user = currentUser(useDb());
-  const isLibrarian = user?.role === "librarian";
+export function Intro({ live = false, liveRole = null }: { live?: boolean; liveRole?: Role | null }) {
+  const db = useDb();
+  const role = live ? liveRole : currentUser(db)?.role;
+  const isLibrarian = role === "librarian";
 
   return (
     <>
@@ -70,13 +72,13 @@ export function Intro() {
               도서관에 직접 신청하세요
             </h1>
             <p className="hero__desc">
-              언제 어디서든 책을 검색하고 신청하면, 사서 선생님이 확인해 구입 여부를 알려드려요.
+              언제 어디서든 책을 검색하고 신청하면, 관리자가 확인해 구입 여부를 알려드려요.
             </p>
             <div className="hero__cta">
-              <Link to={isLibrarian ? homePathFor(user) : "/books"} className="btn btn--primary">
+              <Link to={isLibrarian ? "/admin/requests" : "/books"} className="btn btn--primary">
                 {isLibrarian ? "신청 목록 보기" : "도서 검색하기"}
               </Link>
-              {!user && (
+              {!role && (
                 <Link to="/login" className="btn">
                   로그인
                 </Link>

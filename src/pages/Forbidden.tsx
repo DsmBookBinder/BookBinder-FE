@@ -11,7 +11,7 @@ export function Forbidden() {
         <p className="page-desc">403</p>
         <h1 className="page-title">이 화면을 볼 권한이 없어요</h1>
         <p className="page-desc">
-          {user?.role === "librarian" ? "학생 전용 화면이에요." : "사서 선생님 전용 화면이에요."}
+          {user?.role === "librarian" ? "학생 전용 화면이에요." : "관리자 전용 화면이에요."}
         </p>
         <Link to={homePathFor(user)} className="btn btn--primary btn--block">
           내 화면으로 돌아가기

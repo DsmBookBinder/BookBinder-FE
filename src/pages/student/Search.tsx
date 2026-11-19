@@ -1,10 +1,12 @@
-import { useState, type FormEvent } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useEffect, useState, type FormEvent } from "react";
+import { Link, useOutletContext, useSearchParams } from "react-router";
 import { BookCover, HoldingTag, Pagination, Segmented } from "../../components/ui";
 import { won } from "../../lib/format";
 import { useDb } from "../../store/db";
 import { currentUser, popularBooks, requestCount, requestStateFor } from "../../store/selectors";
 import type { Book } from "../../types";
+import { studentApi, type ServerBook } from "../../student-api/api";
+import type { LiveContext } from "../../student-api/StudentRoutes";
 
 type Scope = "all" | "owned";
 type Sort = "relevance" | "popular";
@@ -16,7 +18,7 @@ const SCOPE_OPTIONS: { value: Scope; label: string }[] = [
   { value: "owned", label: "교내 소장" },
 ];
 
-const DISABLED_LABEL = { owned: "소장 중", requested: "신청 완료", rejected: "반려된 도서" } as const;
+const DISABLED_LABEL = { owned: "소장 중", requested: "신청 완료", rejected: "반려된 도서", unknown: "소장 여부 확인 불가" } as const;
 
 /** 검색어의 모든 단어가 들어 있어야 하고, 제목 > 저자 > 그 외 순으로 점수를 준다. 0이면 불일치. */
 function relevance(book: Book, words: string[]): number {
@@ -30,16 +32,49 @@ function relevance(book: Book, words: string[]): number {
   return score;
 }
 
-export function Search() {
+export function Search({ live = false }: { live?: boolean }) {
+  const session = useOutletContext<LiveContext | null>();
   const db = useDb();
-  const user = currentUser(db)!;
+  const user = currentUser(db);
   const [params, setParams] = useSearchParams();
 
   // 검색 조건을 주소에 두어, 상세 화면에서 뒤로 왔을 때 그대로 남게 한다
-  const query = params.get("q") ?? "";
-  const scope: Scope = params.get("scope") === "owned" ? "owned" : "all";
+  const query = (params.get("q") ?? "").trim();
+  const scope: Scope = params.get("scope") === "all" ? "all" : "owned";
   const sort: Sort = params.get("sort") === "popular" ? "popular" : "relevance";
   const [input, setInput] = useState(query);
+  useEffect(() => { setInput(query); }, [query]);
+  const requestedPage = Number(params.get("page"));
+  const requested = Number.isInteger(requestedPage) && requestedPage >= 1 && requestedPage <= 1_000_000_000 ? requestedPage : 1;
+  const waiting = scope === "all" && !query;
+  const [remote, setRemote] = useState<Awaited<ReturnType<typeof studentApi.searchPage>> | null>(null);
+  const [ranking, setRanking] = useState<{ book: ServerBook; count: number }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!live) return;
+    setRemote(null);
+    setError("");
+    if (waiting) { setLoading(false); return; }
+    let active = true;
+    setLoading(true);
+    studentApi.searchPage(query, scope, requested, PAGE_SIZE, sort).then((result) => {
+      if (active) setRemote(result);
+    }).catch((failure: Error) => {
+      if (active) setError(failure.message);
+    }).finally(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [live, waiting, query, scope, sort, requested]);
+
+  useEffect(() => {
+    if (!live) return;
+    let active = true;
+    studentApi.popularEntries().then(({ items }) => { if (active) setRanking(items); }).catch(() => {});
+    return () => { active = false; };
+  }, [live]);
 
   const update = (patch: Record<string, string>) => {
     const next = new URLSearchParams(params);
@@ -57,16 +92,18 @@ export function Search() {
   };
 
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const results = db.books
+  const localMatches = live || waiting ? [] : db.books
     .filter((book) => scope === "all" || book.owned)
     .map((book) => ({ book, score: words.length ? relevance(book, words) : 1, count: requestCount(db, book.id) }))
     .filter((entry) => entry.score > 0)
     .sort((a, b) => (sort === "popular" ? b.count - a.count : 0) || b.score - a.score);
-
-  const pageCount = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
-  const page = Math.min(Math.max(1, Number(params.get("page")) || 1), pageCount);
-  const visible = results.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const popular = popularBooks(db, 5);
+  const total = live ? remote?.total ?? 0 : localMatches.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const page = live ? remote?.page ?? 1 : Math.min(requested, pageCount);
+  const visible = waiting ? [] : live
+    ? (remote?.items ?? []).map((book) => ({ book, count: book.requestCount ?? 0, state: book.ownership === "UNKNOWN" ? "unknown" as const : book.requestState ?? "unknown" as const }))
+    : localMatches.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map(({ book, count }) => ({ book, count, state: requestStateFor(db, book, user!.id) }));
+  const popular = waiting ? [] : live ? ranking : popularBooks(db, 5);
 
   return (
     <main className="main">
@@ -76,7 +113,7 @@ export function Search() {
       </div>
 
       <form className="searchbar" role="search" onSubmit={handleSubmit}>
-        <Segmented large label="검색 범위" options={SCOPE_OPTIONS} value={scope} onChange={(value) => update({ scope: value === "all" ? "" : value })} />
+        <Segmented large label="검색 범위" options={SCOPE_OPTIONS} value={scope} onChange={(value) => update({ scope: value === "owned" ? "" : value })} />
         <label htmlFor="q" className="sr-only">
           검색어
         </label>
@@ -96,7 +133,7 @@ export function Search() {
         <section className="card card--flush results" aria-label="검색 결과">
           <div className="results__head">
             <span>
-              검색 결과 <b>{results.length}</b>건
+              {loading ? "검색 중…" : <>검색 결과 <b>{total.toLocaleString("ko-KR")}</b>건</>}
             </span>
             <div className="spacer" />
             <span>정렬:</span>
@@ -109,16 +146,16 @@ export function Search() {
             </button>
           </div>
 
-          {visible.length === 0 && (
+          {error && !waiting && <p className="empty form-error" role="alert">{error}</p>}
+          {!loading && !error && visible.length === 0 && (
             <p className="empty">
-              {query ? `‘${query}’에 맞는 도서를 찾지 못했어요.` : "표시할 도서가 없어요."}
+              {waiting ? "검색어를 입력해 주세요." : query ? `‘${query}’에 맞는 도서를 찾지 못했어요.` : "표시할 도서가 없어요."}
               {scope === "owned" && " 전체 도서에서 다시 검색해 보세요."}
             </p>
           )}
 
-          {visible.map(({ book, count }) => {
-            const state = requestStateFor(db, book, user.id);
-            return (
+          {visible.map(({ book, count, state }) => (
+
               <article key={book.id} className="result">
                 <BookCover src={book.cover} title={book.title} />
                 <div className="result__body">
@@ -126,14 +163,15 @@ export function Search() {
                     <Link to={`/books/${book.id}`} className="ellipsis">
                       {book.title}
                     </Link>
-                    <HoldingTag owned={book.owned} />
+                    {scope === "all" && (state === "unknown" ? <span className="tag">소장 미확인</span> : <HoldingTag owned={book.owned} />)}
                   </div>
                   <span>
-                    {book.author} · {book.publisher} · {book.year}
+                    {book.author || "저자 미상"} · {book.publisher || "출판사 미상"}{book.year ? ` · ${book.year}` : ""}
                   </span>
+                  {"libraryStatus" in book && book.libraryStatus && <span>교내 목록 반출 당시: {book.libraryStatus}</span>}
                   <span>{won(book.price)}</span>
                 </div>
-                <div className="result__side">
+                {scope === "all" && <div className="result__side">
                   <span>
                     신청 <b>{count}</b>명
                   </span>
@@ -146,10 +184,9 @@ export function Search() {
                       {DISABLED_LABEL[state]}
                     </button>
                   )}
-                </div>
+                </div>}
               </article>
-            );
-          })}
+          ))}
         </section>
 
         <aside className="sidebar">
@@ -172,12 +209,12 @@ export function Search() {
             )}
           </div>
           <p className="card card--note">
-            교내 소장 목록을 먼저 확인하고, 없는 책은 전체 도서에서 찾아 신청할 수 있어요.
+            {session?.demo ? "시연 모드에서는 소장 여부가 확인되지 않은 책도 신청할 수 있어요." : "교내 소장 목록을 먼저 확인하고, 없는 책은 전체 도서에서 찾아 신청할 수 있어요."}
           </p>
         </aside>
       </div>
 
-      <Pagination page={page} pageCount={pageCount} onChange={(n) => setParams({ ...Object.fromEntries(params), page: String(n) })} />
+      {!waiting && !loading && !error && <Pagination page={page} pageCount={pageCount} showTotal onChange={(n) => setParams({ ...Object.fromEntries(params), page: String(n) })} />}
     </main>
   );
 }

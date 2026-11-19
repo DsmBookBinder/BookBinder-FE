@@ -1,6 +1,7 @@
 import { Link, NavLink } from "react-router";
 import { useDb } from "../store/db";
 import { currentUser, unreadCount } from "../store/selectors";
+import type { Role } from "../types";
 
 const STUDENT_NAV = [
   { to: "/books", label: "도서 검색/신청" },
@@ -14,11 +15,16 @@ const LIBRARIAN_NAV = [
   { to: "/mypage", label: "마이페이지" },
 ];
 
-export function Header() {
+export function Header({ live = false, account = null, liveUnread = 0 }: {
+  live?: boolean;
+  account?: { name: string; role: Role; classNo?: string } | null;
+  liveUnread?: number;
+}) {
   const db = useDb();
-  const user = currentUser(db);
+  const localUser = live ? null : currentUser(db);
+  const user = live ? account : localUser;
   const isLibrarian = user?.role === "librarian";
-  const unread = user && !isLibrarian ? unreadCount(db, user.id) : 0;
+  const unread = live ? liveUnread : localUser && !isLibrarian ? unreadCount(db, localUser.id) : 0;
 
   return (
     <header className="header">
@@ -27,7 +33,7 @@ export function Header() {
           <span className="logo__mark">B</span>
           BookBinder
         </Link>
-        {isLibrarian && <span className="role-tag">사서</span>}
+        {isLibrarian && <span className="role-tag">관리자</span>}
 
         {user && (
           <nav className="nav">
@@ -52,7 +58,7 @@ export function Header() {
                 {unread > 0 && <span className="bell__count">{unread > 99 ? "99+" : unread}</span>}
               </Link>
             )}
-            <span>{isLibrarian ? `${user.name} 선생님` : `${user.name} · ${user.classNo ?? "-"}`}</span>
+            <span>{isLibrarian ? `${user.name}님` : `${user.name} · ${user.classNo ?? "-"}`}</span>
             <Link to="/logout" className="link-button">
               로그아웃
             </Link>

@@ -1,28 +1,51 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useLocation } from "react-router";
+import { Link, Navigate, useLocation, useNavigate } from "react-router";
 import { DEMO_ACCOUNTS } from "../data/seed";
 import { login, resetDemoData, useDb } from "../store/db";
 import { canAccess, currentUser, homePathFor } from "../store/selectors";
+import { studentApi } from "../student-api/api";
 
 interface LoginLocationState {
   from?: string;
   notice?: string;
 }
 
-export function Login() {
+export function Login({ live = false, adminOnly = false }: { live?: boolean; adminOnly?: boolean }) {
   const user = currentUser(useDb());
   const state = (useLocation().state ?? {}) as LoginLocationState;
   const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const navigate = useNavigate();
 
   // 로그인에 성공하면 여기서 이동한다. 원래 가려던 화면이 이 역할로 볼 수 있는 곳이면 그리로 돌려보낸다.
-  if (user) return <Navigate to={state.from && canAccess(user, state.from) ? state.from : homePathFor(user)} replace />;
+  if (!live && user) return <Navigate to={state.from && canAccess(user, state.from) ? state.from : homePathFor(user)} replace />;
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     if (!loginId.trim() || !password) {
       setError("아이디와 비밀번호를 입력해 주세요.");
+      return;
+    }
+    if (live) {
+      setBusy(true);
+      setError("");
+      try {
+        const signIn = adminOnly ? studentApi.adminLogin : studentApi.login;
+        const account = await signIn(loginId.trim(), password);
+        const studentRoute = state.from && /^\/(?:books(?:\/|[?]|$)|mypage(?:[?]|$)|notifications(?:[?]|$))/.test(state.from);
+        const adminRoute = state.from && /^\/admin\/(?:requests|budget)(?:[?]|$)/.test(state.from);
+        const next = account.role === "LIBRARIAN"
+          ? adminRoute ? state.from! : "/admin/requests"
+          : studentRoute ? state.from! : "/books";
+        navigate(next, { replace: true });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "로그인하지 못했어요.");
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     const result = login(loginId, password);
@@ -39,8 +62,8 @@ export function Login() {
     <main className="main main--center">
       <form className="card auth-card" onSubmit={handleSubmit} noValidate>
         <div>
-          <h1 className="page-title">로그인</h1>
-          <p className="page-desc">BookBinder 계정으로 로그인하세요.</p>
+          <h1 className="page-title">{adminOnly ? "관리자 로그인" : "로그인"}</h1>
+          <p className="page-desc">{adminOnly ? "발급받은 관리자 계정으로 로그인하세요." : "BookBinder 계정으로 로그인하세요."}</p>
         </div>
         {state.notice && <p className="form-notice">{state.notice}</p>}
         <div className="field">
@@ -76,21 +99,19 @@ export function Login() {
             {error}
           </p>
         )}
-        <button type="submit" className="btn btn--primary btn--block btn--tall">
+        <button type="submit" className="btn btn--primary btn--block btn--tall" disabled={busy}>
           로그인
         </button>
-        <div className="auth-card__switch">
-          계정이 없나요? <Link to="/signup">회원가입</Link>
-        </div>
+        <div className="auth-card__switch">{adminOnly ? <Link to="/login">일반 로그인</Link> : <>계정이 없나요? <Link to="/signup">회원가입</Link>{live && <> · <Link to="/admin/login">관리자 로그인</Link></>}</>}</div>
         <div className="auth-card__foot">
-          로그인하면 역할(학생/사서)에 맞는 화면으로 이동해요.
-          {import.meta.env.DEV && (
+          {!adminOnly && "로그인하면 역할에 맞는 화면으로 이동해요."}
+          {!live && import.meta.env.DEV && (
             <div className="row">
               <button type="button" className="link-button" onClick={() => fillDemo("student")}>
                 학생 데모 계정 채우기
               </button>
               <button type="button" className="link-button" onClick={() => fillDemo("librarian")}>
-                사서 데모 계정 채우기
+                관리자 데모 계정 채우기
               </button>
               <button type="button" className="link-button" onClick={resetDemoData}>
                 샘플 데이터 초기화

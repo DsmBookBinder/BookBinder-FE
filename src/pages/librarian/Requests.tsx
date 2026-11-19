@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal } from "../../components/Modal";
 import { DownloadIcon, Pagination, StatusBadge, Table } from "../../components/ui";
 import { downloadXlsx } from "../../lib/export";
 import { fileStamp, formatDate, formatShortDate, STATUS_LABEL, won } from "../../lib/format";
 import { canTransition, revertStatus, setStatus, useDb } from "../../store/db";
-import { bookRows, type BookRow } from "../../store/selectors";
+import { bookRows } from "../../store/selectors";
 import type { Status } from "../../types";
+import { downloadBlob, librarianApi, type AdminBooks, type LibrarianEntry } from "../../student-api/api";
 
 type Action = Exclude<Status, "pending">;
 
@@ -23,7 +24,7 @@ const PAGE_SIZE = 6;
 const STATUSES: Status[] = ["pending", "approved", "rejected", "purchased"];
 const NO_FILTERS: Filters = { status: "all", from: "", to: "", classNo: "all", q: "" };
 
-function matches(row: BookRow, filters: Filters): boolean {
+function matches(row: LibrarianEntry, filters: Filters): boolean {
   if (filters.status !== "all" && row.review.status !== filters.status) return false;
   if (filters.classNo !== "all" && !row.requesters.some((u) => u.classNo === filters.classNo)) return false;
   if (filters.from || filters.to) {
@@ -42,13 +43,13 @@ const reviewStatus = (status: Status): Exclude<Status, "purchased"> => (status =
 const purchaseLabel = (status: Status) => (status === "purchased" ? STATUS_LABEL.purchased : status === "approved" ? "미구매" : "-");
 const REVERT_LABEL = { approved: "승인 취소", rejected: "반려 취소", purchased: "구매완료 취소" } as const;
 
-function requesterSummary(row: BookRow): string {
+function requesterSummary(row: LibrarianEntry): string {
   const [first, ...rest] = row.requesters;
   if (!first) return "-";
   return rest.length ? `${first.name} 외 ${rest.length}명` : first.name;
 }
 
-function RejectModal({ count, onConfirm, onClose }: { count: number; onConfirm: (reason: string) => void; onClose: () => void }) {
+function RejectModal({ count, onConfirm, onClose, failure }: { count: number; failure?: string; onConfirm: (reason: string) => void; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
 
@@ -67,12 +68,12 @@ function RejectModal({ count, onConfirm, onClose }: { count: number; onConfirm: 
         <textarea id="reject-reason" className="input" rows={3} placeholder="예: 이미 비슷한 도서를 소장하고 있어요" value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
         <span className="cell-sub">신청한 학생의 알림에 그대로 표시돼요.</span>
       </div>
-      {error && <p className="form-error" role="alert">{error}</p>}
+      {(failure || error) && <p className="form-error" role="alert">{failure || error}</p>}
     </Modal>
   );
 }
 
-export function Requests() {
+export function Requests({ live = false }: { live?: boolean }) {
   const db = useDb();
   const [draft, setDraft] = useState<Filters>(NO_FILTERS);
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
@@ -80,37 +81,69 @@ export function Requests() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [rejecting, setRejecting] = useState<string[] | null>(null);
+  const [remote, setRemote] = useState<AdminBooks | null>(null);
+  const [selectedRemote, setSelectedRemote] = useState<ReadonlyMap<string, LibrarianEntry>>(new Map());
+  const [revision, setRevision] = useState(0);
+  const [loading, setLoading] = useState(live);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  const rows = bookRows(db);
+  useEffect(() => {
+    if (!live) return;
+    let active = true;
+    setLoading(true);
+    librarianApi.books(new URLSearchParams({ ...filters, sort, page: String(page), pageSize: String(PAGE_SIZE) }))
+      .then((result) => {
+        if (!active) return;
+        setRemote(result);
+        setSelectedRemote((previous) => {
+          const current = new Map(previous);
+          for (const row of result.items) if (current.has(row.book.id)) current.set(row.book.id, row);
+          return current;
+        });
+      }).catch((failure: Error) => { if (active) { setError(failure.message); setRemote(null); } })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [live, filters, sort, page, revision]);
+
+  const rows = live ? [] : bookRows(db);
   // bookRows는 최신순으로 온다. 신청 수가 같으면 최신순이 유지된다.
   const filtered = rows
     .filter((row) => matches(row, filters))
-    .sort((a, b) =>
-      sort === "count"
-        ? b.requests.length - a.requests.length
-        : sort === "title"
-          ? a.book.title.localeCompare(b.book.title, "ko")
-          : 0,
-    );
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const currentPage = Math.min(page, pageCount);
-  const visible = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+    .sort((a, b) => (sort === "count" ? b.requests.length - a.requests.length : sort === "title" ? a.book.title.localeCompare(b.book.title, "ko") : 0));
+  const total = live ? remote?.total ?? 0 : filtered.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentPage = live ? remote?.page ?? 1 : Math.min(page, pageCount);
+  const visible = live ? remote?.items ?? [] : filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   // 필터가 바뀌어 보이지 않게 된 줄은 선택에서 제외한다
-  const selectedRows = filtered.filter((row) => selected.has(row.book.id));
-  const allVisibleSelected = visible.length > 0 && visible.every((row) => selected.has(row.book.id));
+  const selectedRows = live ? [...selectedRemote.values()] : filtered.filter((row) => selected.has(row.book.id));
+  const allVisibleSelected = visible.length > 0 && visible.every((row) => isSelected(row.book.id));
 
-  const classOptions = [...new Set(db.users.flatMap((u) => u.classNo ?? []))].sort();
-  const countOf = (status: Status) => rows.filter((row) => row.review.status === status).length;
+  const classOptions = live ? remote?.classOptions ?? [] : [...new Set(db.users.flatMap((u) => u.classNo ?? []))].sort();
+  const countOf = (status: Status) => live ? remote?.summary[status] ?? 0 : rows.filter((row) => row.review.status === status).length;
+  function isSelected(id: string) { return live ? selectedRemote.has(id) : selected.has(id); }
   const selectedIdsFor = (action: Action) =>
     selectedRows.filter((row) => canTransition(row.review.status, action)).map((row) => row.book.id);
 
   const applyFilters = (next: Filters) => {
+    setError("");
+    if (live) setSelectedRemote(new Map());
     setFilters(next);
     setDraft(next);
     setPage(1);
   };
 
   const toggle = (ids: string[], on: boolean) => {
+    if (live) {
+      setSelectedRemote((previous) => {
+        const next = new Map(previous);
+        if (on) {
+          for (const row of visible) if (ids.includes(row.book.id)) next.set(row.book.id, row);
+        } else for (const id of ids) next.delete(id);
+        return next;
+      });
+      return;
+    }
     const next = new Set(selected);
     for (const id of ids) {
       if (on) next.add(id);
@@ -119,22 +152,49 @@ export function Requests() {
     setSelected(next);
   };
 
+  async function applyRemote(ids: string[], change: () => Promise<{ changed: number }>) {
+    if (busy || ids.length === 0) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await change();
+      if (!result.changed) setError("처리할 수 있는 도서가 없어요.");
+      else if (result.changed < ids.length) setError(`${result.changed}건 처리했어요. 나머지 도서의 상태를 확인해 주세요.`);
+      toggle(ids, false);
+      setRejecting(null);
+      setRevision((n) => n + 1);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "처리하지 못했어요.");
+    } finally { setBusy(false); }
+  }
+
   const act = (ids: string[], action: Action, reason?: string) => {
-    if (action === "rejected" && reason === undefined) {
-      setRejecting(ids);
-      return;
-    }
+    if (busy) return;
+    if (action === "rejected" && reason === undefined) { setError(""); setRejecting(ids); return; }
+    if (live) { void applyRemote(ids, () => librarianApi.changeStatus(ids, action, reason)); return; }
     setStatus(ids, action, reason);
     toggle(ids, false);
     setRejecting(null);
   };
 
   const revert = (ids: string[]) => {
+    if (live) { void applyRemote(ids, () => librarianApi.revert(ids)); return; }
     revertStatus(ids);
     toggle(ids, false);
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
+    if (live) {
+      if (busy) return;
+      setBusy(true);
+      setError("");
+      try {
+        const { status: _status, ...selection } = filters;
+        downloadBlob(await librarianApi.schoolExport({ ...selection, sort }), `구입예정도서목록_${fileStamp()}.xlsx`);
+      } catch (failure) { setError(failure instanceof Error ? failure.message : "엑셀을 내보내지 못했어요."); }
+      finally { setBusy(false); }
+      return;
+    }
     void downloadXlsx(
       `신청도서목록_${fileStamp()}.xlsx`,
       ["도서명", "저자", "출판사", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청일", "검토 결과", "구매 여부", "반려 사유"],
@@ -158,7 +218,7 @@ export function Requests() {
   const bulkButton = (action: Action, label: string) => {
     const ids = selectedIdsFor(action);
     return (
-      <button type="button" className="btn btn--sm" disabled={ids.length === 0} onClick={() => act(ids, action)}>
+      <button type="button" className="btn btn--sm" disabled={loading || busy || ids.length === 0} onClick={() => act(ids, action)}>
         {label}
       </button>
     );
@@ -172,14 +232,14 @@ export function Requests() {
           <p className="page-desc">학생들이 신청한 도서를 검토하고 조치하세요.</p>
         </div>
         <div className="spacer" />
-        <button type="button" className="btn btn--primary" disabled={filtered.length === 0} onClick={handleExport}>
+        <button type="button" className="btn btn--primary" disabled={busy || loading || (live ? !remote?.summary.approved : total === 0)} onClick={() => void handleExport()}>
           <DownloadIcon />
-          엑셀 내보내기
+          {live ? "승인 도서 발주 엑셀" : "엑셀 내보내기"}
         </button>
       </div>
 
       <div className="card summary">
-        <span>전체 <b>{rows.length}</b>건</span>
+        <span>전체 <b>{live ? remote?.summary.total ?? 0 : rows.length}</b>건</span>
         {STATUSES.map((status) => (
           <div key={status} className="summary__item">
             <StatusBadge status={status} />
@@ -199,7 +259,7 @@ export function Requests() {
           >
             <option value="latest">최신순</option>
             <option value="count">신청 수 순</option>
-            <option value="title">가나다순</option>
+            {live && <option value="title">도서명순</option>}
           </select>
         </label>
       </div>
@@ -254,13 +314,14 @@ export function Requests() {
         <button
           type="button"
           className="btn btn--sm"
-          disabled={selectedRows.every((row) => row.review.status === "pending")}
+          disabled={busy || loading || selectedRows.every((row) => row.review.status === "pending")}
           onClick={() => revert(selectedRows.filter((row) => row.review.status !== "pending").map((row) => row.book.id))}
         >
           한 단계 되돌리기
         </button>
       </div>
 
+      {!rejecting && error && <p className="form-error" role="alert">{error}</p>}
       <Table
         columns="44px 2.2fr 1fr 0.8fr 0.7fr 1.1fr 0.8fr 90px 100px minmax(176px, 1.3fr)"
         minWidth={1160}
@@ -269,14 +330,14 @@ export function Requests() {
           "도서", "ISBN", "가격", "신청 수", "신청 학생", "최근 신청", "검토 결과", "구매 여부", "조치",
         ]}
       >
-        {visible.length === 0 && <p className="empty">조건에 맞는 신청 도서가 없어요.</p>}
-        {visible.map((row) => {
+        {(loading || visible.length === 0) && <p className="empty">{loading ? "불러오는 중…" : "조건에 맞는 신청 도서가 없어요."}</p>}
+        {!loading && visible.map((row) => {
           const { book, review } = row;
-          const isSelected = selected.has(book.id);
+          const rowSelected = isSelected(book.id);
           return (
-            <div key={book.id} className={isSelected ? "table__row table__row--selected" : "table__row"} role="row">
+            <div key={book.id} className={rowSelected ? "table__row table__row--selected" : "table__row"} role="row">
               <div role="cell">
-                <input type="checkbox" className="checkbox" aria-label={`${book.title} 선택`} checked={isSelected} onChange={(e) => toggle([book.id], e.target.checked)} />
+                <input type="checkbox" className="checkbox" aria-label={`${book.title} 선택`} checked={rowSelected} onChange={(e) => toggle([book.id], e.target.checked)} />
               </div>
               <div role="cell">
                 <div style={{ fontWeight: 600 }}>{book.title}</div>
@@ -298,15 +359,15 @@ export function Requests() {
                 <div className="cell-actions">
                   {review.status === "pending" && (
                     <>
-                      <button type="button" className="btn btn--xs" onClick={() => act([book.id], "approved")}>승인</button>
-                      <button type="button" className="btn btn--xs" onClick={() => act([book.id], "rejected")}>반려</button>
+                      <button type="button" className="btn btn--xs" disabled={busy} onClick={() => act([book.id], "approved")}>승인</button>
+                      <button type="button" className="btn btn--xs" disabled={busy} onClick={() => act([book.id], "rejected")}>반려</button>
                     </>
                   )}
                   {review.status === "approved" && (
-                    <button type="button" className="btn btn--xs" onClick={() => act([book.id], "purchased")}>구매완료</button>
+                    <button type="button" className="btn btn--xs" disabled={busy} onClick={() => act([book.id], "purchased")}>구매완료</button>
                   )}
                   {review.status !== "pending" && (
-                    <button type="button" className="btn btn--xs" aria-label={`${book.title} ${REVERT_LABEL[review.status]}`} onClick={() => revert([book.id])}>
+                    <button type="button" className="btn btn--xs" disabled={busy} aria-label={`${book.title} ${REVERT_LABEL[review.status]}`} onClick={() => revert([book.id])}>
                       {REVERT_LABEL[review.status]}
                     </button>
                   )}
@@ -319,7 +380,7 @@ export function Requests() {
 
       <Pagination page={currentPage} pageCount={pageCount} onChange={setPage} />
 
-      {rejecting && <RejectModal count={rejecting.length} onConfirm={(reason) => act(rejecting, "rejected", reason)} onClose={() => setRejecting(null)} />}
+      {rejecting && <RejectModal failure={error} count={rejecting.length} onConfirm={(reason) => act(rejecting, "rejected", reason)} onClose={() => setRejecting(null)} />}
     </main>
   );
 }

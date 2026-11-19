@@ -77,17 +77,24 @@ export function Pagination({
   page,
   pageCount,
   onChange,
+  showTotal = false,
 }: {
   page: number;
   pageCount: number;
   onChange: (page: number) => void;
+  showTotal?: boolean;
 }) {
-  if (pageCount <= 1) return null;
+  if (pageCount <= 1 && !showTotal) return null;
+  const pages = showTotal && pageCount > 9
+    ? [...new Set([1, page - 2, page - 1, page, page + 1, page + 2, pageCount])].filter((n) => n >= 1 && n <= pageCount).sort((a, b) => a - b)
+    : Array.from({ length: pageCount }, (_, i) => i + 1);
   return (
     <nav className="pagination" aria-label="페이지">
-      {Array.from({ length: pageCount }, (_, i) => i + 1).map((n) => (
+      {showTotal && <span className="page-desc">{page.toLocaleString("ko-KR")} / {pageCount.toLocaleString("ko-KR")} 페이지</span>}
+      {pages.map((n, i) => (
+        <span key={n} className="pagination__item">
+        {i > 0 && n > pages[i - 1] + 1 && <span className="page-desc" aria-hidden="true">…</span>}
         <button
-          key={n}
           type="button"
           className="pagination__page"
           aria-current={n === page ? "page" : undefined}
@@ -95,6 +102,7 @@ export function Pagination({
         >
           {n}
         </button>
+        </span>
       ))}
     </nav>
   );

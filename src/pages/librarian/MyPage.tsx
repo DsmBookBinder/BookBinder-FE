@@ -1,10 +1,12 @@
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useOutletContext } from "react-router";
 import { Modal } from "../../components/Modal";
 import { StatCard, StatusBadge, Table } from "../../components/ui";
 import { formatDate, formatDateTime } from "../../lib/format";
 import { changePassword, useDb } from "../../store/db";
 import { currentUser } from "../../store/selectors";
+import { librarianApi, studentApi } from "../../student-api/api";
+import type { LiveContext } from "../../student-api/StudentRoutes";
 
 const RECENT_LIMIT = 8;
 
@@ -14,15 +16,25 @@ function weekStart(now = new Date()): number {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysSinceMonday).getTime();
 }
 
-function PasswordModal({ onClose }: { onClose: () => void }) {
+function PasswordModal({ onClose, live }: { onClose: () => void; live: boolean }) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
 
-  const handleSubmit = () => {
+  const [busy, setBusy] = useState(false);
+  const handleSubmit = async () => {
+    if (busy) return;
     if (next.length < 8) return setError("새 비밀번호는 8자 이상이어야 해요.");
     if (next !== confirm) return setError("새 비밀번호가 서로 달라요.");
+    if (live) {
+      setBusy(true);
+      setError("");
+      try { await studentApi.changePassword(current, next, confirm); onClose(); }
+      catch (failure) { setError(failure instanceof Error ? failure.message : "비밀번호를 변경하지 못했어요."); }
+      finally { setBusy(false); }
+      return;
+    }
     const result = changePassword(current, next);
     if (!result.ok) return setError(result.error);
     onClose();
@@ -47,23 +59,37 @@ function PasswordModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-export function LibrarianMyPage() {
+export function LibrarianMyPage({ live = false }: { live?: boolean }) {
   const db = useDb();
-  const user = currentUser(db)!;
+  const session = useOutletContext<LiveContext | null>();
+  const local = currentUser(db);
+  const user = live && session ? { name: session.user.name, loginId: session.user.login_id, joinedAt: session.user.joinedAt } : local;
   const [changing, setChanging] = useState(false);
+  const [remote, setRemote] = useState<Awaited<ReturnType<typeof librarianApi.summary>> | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!live) return;
+    let active = true;
+    librarianApi.summary().then((result) => { if (active) setRemote(result); })
+      .catch((failure: Error) => { if (active) setError(failure.message); });
+    return () => { active = false; };
+  }, [live]);
 
   const reviews = Object.values(db.reviews);
   const since = weekStart();
   const thisWeek = db.logs.filter((log) => log.at >= since);
-  const recent = [...db.logs].sort((a, b) => b.at - a.at).slice(0, RECENT_LIMIT);
+  const recent = live ? remote?.recentLogs ?? [] : [...db.logs].sort((a, b) => b.at - a.at).slice(0, RECENT_LIMIT).map((log) => ({
+    ...log, bookTitle: db.books.find((b) => b.id === log.bookId)?.title ?? "삭제된 도서",
+  }));
+  if (!user) return null;
 
   return (
     <main className="main main--split">
       <aside className="card profile">
         <div className="profile__avatar" aria-hidden="true">{user.name.slice(0, 1)}</div>
-        <div className="profile__name">{user.name} 선생님</div>
+        <div className="profile__name">{user.name}님</div>
         <div>
-          <div className="info-row"><span>역할</span><span>사서</span></div>
+          <div className="info-row"><span>역할</span><span>관리자</span></div>
           <div className="info-row"><span>아이디</span><span>{user.loginId}</span></div>
           <div className="info-row"><span>가입일</span><span>{formatDate(user.joinedAt)}</span></div>
         </div>
@@ -75,10 +101,10 @@ export function LibrarianMyPage() {
       <div className="stack grow">
         <h1 className="page-title">처리 현황</h1>
         <div className="stats">
-          <StatCard label="처리 대기" value={reviews.filter((r) => r.status === "pending").length} />
-          <StatCard label="이번 주 승인" value={thisWeek.filter((log) => log.status === "approved").length} />
-          <StatCard label="이번 주 반려" value={thisWeek.filter((log) => log.status === "rejected").length} />
-          <StatCard label="구매완료 누적" value={reviews.filter((r) => r.status === "purchased").length} />
+          <StatCard label="처리 대기" value={live ? remote?.pending ?? 0 : reviews.filter((r) => r.status === "pending").length} />
+          <StatCard label="이번 주 승인" value={live ? remote?.weekApproved ?? 0 : thisWeek.filter((log) => log.status === "approved").length} />
+          <StatCard label="이번 주 반려" value={live ? remote?.weekRejected ?? 0 : thisWeek.filter((log) => log.status === "rejected").length} />
+          <StatCard label="구매완료 누적" value={live ? remote?.purchasedTotal ?? 0 : reviews.filter((r) => r.status === "purchased").length} />
         </div>
 
         <div className="row">
@@ -87,19 +113,20 @@ export function LibrarianMyPage() {
           <Link to="/admin/requests">신청 목록으로 이동</Link>
         </div>
 
+        {error && <p className="form-error" role="alert">{error}</p>}
         <Table columns="160px 2fr 120px" minWidth={480} head={["처리 일시", "도서명", "변경 상태"]}>
-          {recent.length === 0 && <p className="empty">아직 처리한 내역이 없어요.</p>}
+          {recent.length === 0 && <p className="empty">{live && !remote && !error ? "불러오는 중…" : "아직 처리한 내역이 없어요."}</p>}
           {recent.map((log) => (
             <div key={log.id} className="table__row" role="row">
               <div role="cell" className="cell-sm muted">{formatDateTime(log.at)}</div>
-              <div role="cell">{db.books.find((b) => b.id === log.bookId)?.title ?? "삭제된 도서"}</div>
+              <div role="cell">{log.bookTitle}</div>
               <div role="cell"><StatusBadge status={log.status} /></div>
             </div>
           ))}
         </Table>
       </div>
 
-      {changing && <PasswordModal onClose={() => setChanging(false)} />}
+      {changing && <PasswordModal live={live} onClose={() => setChanging(false)} />}
     </main>
   );
 }
